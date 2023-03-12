@@ -12,17 +12,17 @@ hyperopt = [
 ]
 
 freqai = [
-    'scikit-learn',
-    'catboost; platform_machine != "aarch64"',
-    'lightgbm',
-    'xgboost'
+    # 'scikit-learn',
+    # 'catboost; platform_machine != "aarch64"',
+    # 'lightgbm',
+    # 'xgboost'
 ]
 
 freqai_rl = [
-    'torch',
-    'stable-baselines3',
-    'gym==0.21',
-    'sb3-contrib'
+    # 'torch',
+    # 'stable-baselines3',
+    # 'gym==0.21',
+    # 'sb3-contrib'
 ]
 
 hdf5 = [
