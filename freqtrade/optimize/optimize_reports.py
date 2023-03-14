@@ -563,6 +563,7 @@ def generate_backtest_stats(btdata: Dict[str, DataFrame],
     :param max_date: Backtest end date
     :return: Dictionary containing results per strategy and a strategy summary.
     """
+    logger.info("generate_backest_stats:IN")
     result: Dict[str, Any] = {
         'metadata': {},
         'strategy': {},
@@ -584,7 +585,7 @@ def generate_backtest_stats(btdata: Dict[str, DataFrame],
 
     result['metadata'] = metadata
     result['strategy_comparison'] = strategy_results
-
+    logger.info("generate_backest_stats:OUT")
     return result
 
 
@@ -912,6 +913,8 @@ def show_backtest_result(strategy: str, results: Dict[str, Any], stake_currency:
 def show_backtest_results(config: Config, backtest_stats: Dict):
     stake_currency = config['stake_currency']
 
+    logger.info("show_backtest_results:IN")
+
     for strategy, results in backtest_stats['strategy'].items():
         show_backtest_result(
             strategy, results, stake_currency,
@@ -927,6 +930,8 @@ def show_backtest_results(config: Config, backtest_stats: Dict):
         print(table)
         print('=' * len(table.splitlines()[0]))
         print('\nFor more details, please look at the detail tables above')
+
+    logger.info("show_backtest_results:OUT")
 
 
 def show_sorted_pairlist(config: Config, backtest_stats: Dict):

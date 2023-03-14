@@ -21,6 +21,7 @@ def start_trading(args: Dict[str, Any]) -> int:
     worker = None
     try:
         signal.signal(signal.SIGTERM, term_handler)
+        # worker = Worker(args)
         worker = Worker(args)
         worker.run()
     except Exception as e:

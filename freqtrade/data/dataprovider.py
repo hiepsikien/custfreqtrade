@@ -349,6 +349,7 @@ class DataProvider:
         :return: Dataframe for this pair
         :param candle_type: '', mark, index, premiumIndex, or funding_rate
         """
+        # logger.info("get_pair_dataframe: IN")
         if self.runmode in (RunMode.DRY_RUN, RunMode.LIVE):
             # Get live OHLCV data.
             data = self.ohlcv(pair=pair, timeframe=timeframe, candle_type=candle_type)
@@ -357,6 +358,11 @@ class DataProvider:
             data = self.historic_ohlcv(pair=pair, timeframe=timeframe, candle_type=candle_type)
         if len(data) == 0:
             logger.warning(f"No data found for ({pair}, {timeframe}, {candle_type}).")
+        # logger.info("get_pair_dataframe: OUT")
+
+        # if data is not None:
+        #     logger.info(f" len = {len(data)}, last = {data.iloc[-1]}")
+
         return data
 
     def get_analyzed_dataframe(self, pair: str, timeframe: str) -> Tuple[DataFrame, datetime]:
@@ -453,16 +459,19 @@ class DataProvider:
         :param copy: copy dataframe before returning if True.
                      Use False only for read-only operations (where the dataframe is not modified)
         """
+        logger.info("ohlcv: IN")
         if self._exchange is None:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
         if self.runmode in (RunMode.DRY_RUN, RunMode.LIVE):
             _candle_type = CandleType.from_string(
                 candle_type) if candle_type != '' else self._config['candle_type_def']
+            logger.info("ohlcv: OUT")
             return self._exchange.klines(
                 (pair, timeframe or self._config['timeframe'], _candle_type),
                 copy=copy
             )
         else:
+            logger.info("ohlcv: OUT")
             return DataFrame()
 
     def market(self, pair: str) -> Optional[Dict[str, Any]]:

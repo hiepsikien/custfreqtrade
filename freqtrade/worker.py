@@ -12,6 +12,7 @@ import sdnotify
 from freqtrade import __version__
 from freqtrade.configuration import Configuration
 from freqtrade.constants import PROCESS_THROTTLE_SECS, RETRY_TIMEOUT, Config
+from freqtrade.customization.cus_freqtradebot import CusFreqtradeBot
 from freqtrade.enums import RPCMessageType, State
 from freqtrade.exceptions import OperationalException, TemporaryError
 from freqtrade.exchange import timeframe_to_next_date
@@ -49,8 +50,14 @@ class Worker:
             # Load configuration
             self._config = Configuration(self._args, None).get_config()
 
+        #Get strategy type
+        self.integrated_trading = self._config.get('integrated_trading',"no")
+
         # Init the instance of the bot
-        self.freqtrade = FreqtradeBot(self._config)
+        if self.integrated_trading=="yes":
+            self.freqtrade = CusFreqtradeBot(self._config)
+        else:
+            self.freqtrade = FreqtradeBot(self._config)
 
         internals_config = self._config.get('internals', {})
         self._throttle_secs = internals_config.get('process_throttle_secs',

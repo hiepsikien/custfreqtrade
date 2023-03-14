@@ -185,11 +185,13 @@ class IStrategy(ABC, HyperStrategyMixin):
         Strategy init - runs after dataprovider has been added.
         Must call bot_start()
         """
+        logger.debug("ft_bot_start: IN")
         self.load_freqAI_model()
 
         strategy_safe_wrapper(self.bot_start)()
 
         self.ft_load_hyper_params(self.config.get('runmode') == RunMode.HYPEROPT)
+        logger.debug("ft_bot_start: OUT")
 
     def ft_bot_cleanup(self) -> None:
         """
@@ -1329,7 +1331,7 @@ class IStrategy(ABC, HyperStrategyMixin):
         :param metadata: Additional information, like the currently traded pair
         :return: a Dataframe with all mandatory indicators for the strategies
         """
-        logger.debug(f"Populating indicators for pair {metadata.get('pair')}.")
+        logger.info(f"Populating indicators for pair {metadata.get('pair')}.")
 
         # call populate_indicators_Nm() which were tagged with @informative decorator.
         for inf_data, populate_fn in self._ft_informative:

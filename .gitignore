@@ -5,6 +5,7 @@ config*.json
 *.sqlite-wal
 logfile.txt
 user_data/data
+backtest_results/
 freqtrade-plot.html
 freqtrade-profit-plot.html
 freqtrade/rpc/api_server/ui/*
@@ -39,6 +40,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.env/
+.devcontainer/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

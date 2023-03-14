@@ -152,6 +152,7 @@ def trim_dataframes(preprocessed: Dict[str, DataFrame], timerange,
     :param startup_candles: Startup-candles that should be removed
     :return: Dict of trimmed dataframes
     """
+    # logger.info("trim_dataframes:IN")
     processed: Dict[str, DataFrame] = {}
 
     for pair, df in preprocessed.items():
@@ -161,6 +162,7 @@ def trim_dataframes(preprocessed: Dict[str, DataFrame], timerange,
         else:
             logger.warning(f'{pair} has no data left after adjusting for startup candles, '
                            f'skipping.')
+    # logger.info("trim_dataframes:OUT")
     return processed
 
 
