@@ -991,20 +991,20 @@ class IStrategy(ABC, HyperStrategyMixin):
             return False, False, None
 
         if is_short:
-            enter = latest.get(SignalType.ENTER_SHORT.value, 0) == 1
-            exit_ = latest.get(SignalType.EXIT_SHORT.value, 0) == 1
+            enter_ = latest.get(SignalType.ENTER_SHORT.value,0) == 1    #type:ignore
+            exit_ = latest.get(SignalType.EXIT_SHORT.value,0) == 1      #type:ignore
 
         else:
-            enter = latest[SignalType.ENTER_LONG.value] == 1
-            exit_ = latest.get(SignalType.EXIT_LONG.value, 0) == 1
+            enter_ = latest.get(SignalType.ENTER_LONG.value,0) == 1     #type:ignore
+            exit_ = latest.get(SignalType.EXIT_LONG.value,0) == 1       #type:ignore
         exit_tag = latest.get(SignalTagType.EXIT_TAG.value, None)
         # Tags can be None, which does not resolve to False.
         exit_tag = exit_tag if isinstance(exit_tag, str) else None
 
         logger.debug(f"exit-trigger: {latest['date']} (pair={pair}) "
-                     f"enter={enter} exit={exit_}")
+                     f"enter={enter_} exit={exit_}")
 
-        return enter, exit_, exit_tag
+        return enter_, exit_, exit_tag
 
     def get_entry_signal(
         self,
@@ -1025,7 +1025,7 @@ class IStrategy(ABC, HyperStrategyMixin):
         if latest is None or latest_date is None:
             return None, None
 
-        enter_long = latest[SignalType.ENTER_LONG.value] == 1
+        enter_long = latest.get(SignalType.ENTER_LONG.value, 0) == 1
         exit_long = latest.get(SignalType.EXIT_LONG.value, 0) == 1
         enter_short = latest.get(SignalType.ENTER_SHORT.value, 0) == 1
         exit_short = latest.get(SignalType.EXIT_SHORT.value, 0) == 1
@@ -1034,12 +1034,12 @@ class IStrategy(ABC, HyperStrategyMixin):
         enter_tag_value: Optional[str] = None
         if enter_long == 1 and not any([exit_long, enter_short]):
             enter_signal = SignalDirection.LONG
-            enter_tag_value = latest.get(SignalTagType.ENTER_TAG.value, None)
+            enter_tag_value = latest.get(SignalTagType.ENTER_TAG.value, None)   #type:ignore
         if (self.config.get('trading_mode', TradingMode.SPOT) != TradingMode.SPOT
                 and self.can_short
                 and enter_short == 1 and not any([exit_short, enter_long])):
             enter_signal = SignalDirection.SHORT
-            enter_tag_value = latest.get(SignalTagType.ENTER_TAG.value, None)
+            enter_tag_value = latest.get(SignalTagType.ENTER_TAG.value, None)   #type:ignore
 
         enter_tag_value = enter_tag_value if isinstance(enter_tag_value, str) else None
 

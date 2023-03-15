@@ -3,7 +3,6 @@
 # flake8: noqa: F401
 # isort: skip_file
 # --- Do not remove these libs ---
-from re import I
 import sys
 from freqtrade.constants import Config
 sys.path.append("/home/andy/CryptoTradingPlatform/freqtrade")
@@ -12,22 +11,22 @@ from datetime import datetime
 import numpy as np  # noqaclear
 import pandas as pd  # noqa
 from pandas import DataFrame
-from typing import Optional, Union, List, Tuple, Dict
-from freqtrade.strategy import (BooleanParameter, CategoricalParameter, DecimalParameter,
-                                IStrategy, IntParameter)
+from typing import Optional, List, Tuple
+from freqtrade.strategy import IStrategy
 
 # --------------------------------
 # Add your lib to import here
-import freqtrade.vendor.qtpylib.indicators as qtpylib
+# import freqtrade.vendor.qtpylib.indicators as qtpylib
 import talib as ta
 import logging
-from freqtrade.persistence.trade_model import LocalTrade, Trade
+from freqtrade.persistence.trade_model import Trade
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # This class is a sample. Feel free to customize it.
 
 # Market related parameters
+VERSION = "1.0"
 MACD_FAST = 26
 MACD_SLOW= 12
 MACD_SIGNAL= 9
@@ -41,13 +40,14 @@ ALTCOIN_CYCLE = "MEDIUM"
 
 #Trading related parameters
 TIMEFRAME = "4h"
-PAIR_NUMBER = 3
-INVESTMENT_TRUNK = 5
-HOLDING_PERIOD_IN_MIN = int(3 * 24 * 60)
+TRADING_TIMFRAME_IN_MIN = 4 * 60
+PAIR_NUMBER = 5
+HOLDING_PERIOD_IN_TIMEFRAMES = 3 * 6
+INVEST_ROUNDS = HOLDING_PERIOD_IN_TIMEFRAMES / 2
 LEVERAGE_RATIO = 2.0
-TAKE_PROFIT = 1.2
-STOP_LOSS = -0.6
-STARTUP_CANDLE_COUNT = 30 * 6
+TAKE_PROFIT_RATE = 0.5
+STOP_LOSS_RATE = -0.25
+STARTUP_CANDLE_COUNT = 365 * 6
 
 class ArbitrageBothSides(IStrategy):
     """
@@ -70,19 +70,22 @@ class ArbitrageBothSides(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
+    #Hyperotable parameter
+    # holding_period_in_timeframe = CategoricalParameter([9,10,11,12,13,14,15,16,17,18],default=12,space="roi")
+
     # Can this strategy go short?
     can_short: bool = True
 
     # Minimal ROI designed for the strategy.
     # This attribute will be overridden if the config file contains "minimal_roi".
     minimal_roi = {
-        "0": TAKE_PROFIT,
-        f"{HOLDING_PERIOD_IN_MIN}":-1
+        "0": TAKE_PROFIT_RATE * LEVERAGE_RATIO,
+        f"{HOLDING_PERIOD_IN_TIMEFRAMES * TRADING_TIMFRAME_IN_MIN}":-1
     }
 
     # Optimal stoploss designed for the strategy.
     # This attribute will be overridden if the config file contains "stoploss".
-    stoploss = STOP_LOSS
+    stoploss = STOP_LOSS_RATE * LEVERAGE_RATIO
 
     # Trailing stoploss
     trailing_stop = False
@@ -122,6 +125,21 @@ class ArbitrageBothSides(IStrategy):
     position_adjustment_enable = True
 
     def __init__(self, config: Config) -> None:
+        """ Overided initialization
+
+        Attributes:
+        - _cached_indicator_time: latest time that indicator data cached
+        - _cached_indicator_data: cached indicator data
+        - _cached_singal_time: latest time that entry signal data caached
+        - _cached_signal_data: cached entry signal data
+        - _cached_stake_time: latest time that stake amount computed
+        - _cached_long_stake: cached stake amount for long positions
+        - _cached_short_stake: cached stake amount for short positions
+        - _cached_adjust_position: cached dictionary data related to adjust position
+
+        Args:
+            config (Config): _description_
+        """
         super().__init__(config)
         self._cached_indicator_time: Optional[str] = None
         self._cached_indicator_data: Optional[pd.DataFrame] = None
@@ -133,7 +151,6 @@ class ArbitrageBothSides(IStrategy):
         self._cached_adjust_position = dict()
 
     def informative_pairs(self):
-        logger.info("information_pairs:IN")
         """
         Define additional, informative pair/interval combinations to be cached from the exchange.
         These pair/interval combinations are non-tradeable, unless they are part
@@ -144,16 +161,25 @@ class ArbitrageBothSides(IStrategy):
                             ("BTC/USDT", "15m"),
                             ]
         """
-
+        logger.debug("information_pairs:IN")
         # get access to all pairs available in whitelist.
         pairs = self.dp.current_whitelist()
         # Assign tf to each pair so they can be downloaded and cached for strategy.
         informative_pairs = [(pair, self.timeframe) for pair in pairs]
-        logger.info("information_pairs:OUT")
+        logger.debug("information_pairs:OUT")
         return informative_pairs
 
     def _calculate_macd(self, df:pd.DataFrame,pairs:List[str]):
-        print("...calculating MACD ...")
+        """ Calculate MACD indicator
+
+        Args:
+            df (pd.DataFrame): input dataframe
+            pairs (List[str]): list of informative pairs
+
+        Returns:
+            pd:DataFrame: process dataframe
+        """
+        logger.debug("...calculating MACD ...")
         for pair in pairs:
             _,_,medium = ta.MACD( #type: ignore
                 df[f"{pair}_close"],
@@ -184,7 +210,15 @@ class ArbitrageBothSides(IStrategy):
         return df
 
     def _calculate_macd_diff_with_base_pair(self, df:pd.DataFrame,pairs:List[str]):
-        logger.info("...calculating MACD diff between altcoins and BTC...")
+        """ Added difference between pairs with base pair
+        Args:
+            df (pd.DataFrame): input dataframe
+            pairs (List[str]): list of pairs
+
+        Returns:
+            pd.DataFrame: processed dataframe
+        """
+        logger.debug("...calculating MACD diff between altcoins and BTC...")
         #Calculating diff
         for pair in pairs:
             for cycle in MARKET_CYCLES:
@@ -205,7 +239,14 @@ class ArbitrageBothSides(IStrategy):
         return df
 
     def _calculate_macd_diff_mean(self,df:pd.DataFrame,pairs:list[str]):
-        #Calculating rolling diff mean
+        """ Add mean of different between pair and the base pair
+        Args:
+            df (pd.DataFrame): input data
+            pairs (list[str]): list of pairs
+
+        Returns:
+            pd.DataFrame: processed dataframe
+        """
         logger.info("...calculating MACD diff mean...")
         for pair in pairs:
             for cycle in MARKET_CYCLES:
@@ -229,7 +270,14 @@ class ArbitrageBothSides(IStrategy):
         )
 
     def calculate_signal_for_all_pairs(self, analyzed_df:pd.DataFrame):
+        """ Calculate entry signal for all pairs
 
+        Args:
+            analyzed_df (pd.DataFrame): input dataframe
+
+        Returns:
+            pd.DataFrame: processed dataframe
+        """
         df = analyzed_df.apply(self.foo,axis=1)
         df["date"] = analyzed_df["date"]
         for pair in self.dp.current_whitelist():
@@ -248,7 +296,16 @@ class ArbitrageBothSides(IStrategy):
                             row:pd.Series,
                             pairs:List[str]
                             ):
+        """ Core algorithm function that compute set of pairs to go long
+        or short at each timeframe.
 
+        Args:
+            row (pd.Series): current info
+            pairs (List[str]): list of pairs to trade
+
+        Returns:
+            Tuple[[List[str],List[str]): a tuple of long pairs and short pairs
+        """
         is_bull: bool = False
         long_pairs: List[str] = []
         short_pairs: List[str] = []
@@ -291,25 +348,17 @@ class ArbitrageBothSides(IStrategy):
 
         return long_pairs, short_pairs
 
-    def get_trade_signal(
-        self,
-        row:pd.Series,
-        current_pair:str,
-        pairs:list[str]
-        ):
+    def get_signal_from_lists(self,current_pair:str,long_pairs:List[str],short_pairs:List[str]):
+        """ Extract signal for a specific pair
 
-        long_pairs, short_pairs = self.arbitrate_both_sides(
-                row = row,
-                pairs=pairs
-        )
+        Args:
+            current_pair (str): the pair
+            long_pairs (List[str]): list of pairs to go long
+            short_pairs (List[str]): list of pairs to go short
 
-        return self.get_signal_from_lists(
-            current_pair=current_pair,
-            long_pairs=long_pairs,
-            short_pairs=short_pairs
-        )
-
-    def get_signal_from_lists(self,current_pair,long_pairs,short_pairs):
+        Returns:
+            Tuple[int,int]: a tuple such as (1,0) that say go long
+        """
         long_signal = 0
         short_signal = 0
 
@@ -380,7 +429,7 @@ class ArbitrageBothSides(IStrategy):
         dataframe["enter_long"] = df[f"{pair}_LONG"]    #type: ignore
         dataframe["enter_short"] = df[f"{pair}_SHORT"]  #type: ignore
 
-        return dataframe
+        return dataframe.copy()
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
@@ -391,13 +440,26 @@ class ArbitrageBothSides(IStrategy):
         """
         return dataframe
 
+    def version(self):
+        """ Get version
+
+        Returns:
+            _type_: _description_
+        """
+        return VERSION
+
     def bot_loop_start(self):
-        logger.info("bot_loop_start: IN")
-        logger.info("bot_loop_start: OUT")
+        """ Thing to do at bot loop start
+        """
+        logger.debug("bot_loop_start: IN")
+        self.process_at_loop_start(None)
+        logger.debug("bot_loop_start: OUT")
 
     def bot_start(self):
-        logger.info("bot_start: IN")
-        logger.info("bot_start: OUT")
+        """Thing to do at bot start
+        """
+        logger.debug("bot_start: IN")
+        logger.debug("bot_start: OUT")
 
     def custom_stake_amount(self, pair: str, current_time: datetime, current_rate: float,
                             proposed_stake: float, min_stake: Optional[float], max_stake: float,
@@ -426,7 +488,7 @@ class ArbitrageBothSides(IStrategy):
             short_stake = self._cached_short_stake
         else:
             invest_budget = min(
-                self.wallets.get_total_stake_amount()/INVESTMENT_TRUNK, #type: ignore
+                self.wallets.get_total_stake_amount()/INVEST_ROUNDS, #type: ignore
                 self.wallets.get_available_stake_amount() #type: ignore
             )
             long_sum, short_sum, _, _ \
@@ -460,6 +522,12 @@ class ArbitrageBothSides(IStrategy):
         return long_stake if side == "long" else short_stake    #type: ignore
 
     def get_open_trades_info(self):
+        """
+        Get info of open trades
+
+        Returns:
+            _type_: _description_
+        """
         long_sum = 0
         short_sum = 0
         long_num = 0
@@ -491,10 +559,26 @@ class ArbitrageBothSides(IStrategy):
 
         return LEVERAGE_RATIO
 
-    def backtest_loop_start_callback(self,current_time):
-        logger.info(current_time)
+    def backtest_loop_start_callback(self,current_time:datetime):
+        """ The callback function that backtester call at the beginning of each timeframe
+        Args:
+            current_time (datetime): current time
+        """
+        self.process_at_loop_start(current_time)
+
+    def process_at_loop_start(self,current_time:datetime):
+        """
+        Thing to do at the beginning of each loop.
+
+        Args:
+            current_time (datetime): current time
+        """
         long_sum, short_sum,_,_ = self.get_open_trades_info()
-        logger.info(f"Long stake ratio: {long_sum/(long_sum+short_sum) if (long_sum+short_sum)>0 else 0}")
+        current_stake = long_sum + short_sum
+        long_stake_ratio = round(long_sum/(long_sum+short_sum) if (long_sum+short_sum)>0 else 0,3)
+        total_stake = self.wallets.get_total_stake_amount()
+        stake_usage = round(current_stake/total_stake if total_stake > 0 else 0,3)
+        logger.info(f"{current_time} | Long stake: {long_stake_ratio} | Usaged stake: {stake_usage}")
 
     def adjust_trade_position(self, trade: Trade, current_time: datetime,
                               current_rate: float, current_profit: float,
@@ -540,7 +624,7 @@ class ArbitrageBothSides(IStrategy):
         if current_date not in adjust_position_dict.keys(): #type:ignore
             return None
 
-        if adjust_position_dict[current_date] == -1:    #type:ignore
+        if adjust_position_dict[current_date] == -1:  #type:ignore
             return None
 
         (side,amount) = adjust_position_dict[current_date]  #type:ignore

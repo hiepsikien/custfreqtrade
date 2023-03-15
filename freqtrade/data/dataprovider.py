@@ -459,19 +459,19 @@ class DataProvider:
         :param copy: copy dataframe before returning if True.
                      Use False only for read-only operations (where the dataframe is not modified)
         """
-        logger.info("ohlcv: IN")
+        logger.debug("ohlcv: IN")
         if self._exchange is None:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
         if self.runmode in (RunMode.DRY_RUN, RunMode.LIVE):
             _candle_type = CandleType.from_string(
                 candle_type) if candle_type != '' else self._config['candle_type_def']
-            logger.info("ohlcv: OUT")
+            logger.debug("ohlcv: OUT")
             return self._exchange.klines(
                 (pair, timeframe or self._config['timeframe'], _candle_type),
                 copy=copy
             )
         else:
-            logger.info("ohlcv: OUT")
+            logger.debug("ohlcv: OUT")
             return DataFrame()
 
     def market(self, pair: str) -> Optional[Dict[str, Any]]:

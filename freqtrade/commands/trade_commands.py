@@ -5,7 +5,6 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
-
 def start_trading(args: Dict[str, Any]) -> int:
     """
     Main entry point for trading mode
