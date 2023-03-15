@@ -1372,3 +1372,9 @@ class IStrategy(ABC, HyperStrategyMixin):
         if 'exit_long' not in df.columns:
             df = df.rename({'sell': 'exit_long'}, axis='columns')
         return df
+
+    def backtest_loop_start_callback(self,current_time):
+        """
+        Callback when the loop backtest start
+        """
+        pass

@@ -42,11 +42,11 @@ ALTCOIN_CYCLE = "MEDIUM"
 #Trading related parameters
 TIMEFRAME = "4h"
 PAIR_NUMBER = 3
-INVESTMENT_TRUNK = 7
-HOLDING_PERIOD_IN_MIN = int(2 * 24 * 60)
+INVESTMENT_TRUNK = 5
+HOLDING_PERIOD_IN_MIN = int(3 * 24 * 60)
 LEVERAGE_RATIO = 2.0
-TAKE_PROFIT = 0.6
-STOP_LOSS = -0.3
+TAKE_PROFIT = 1.2
+STOP_LOSS = -0.6
 STARTUP_CANDLE_COUNT = 30 * 6
 
 class ArbitrageBothSides(IStrategy):
@@ -128,7 +128,8 @@ class ArbitrageBothSides(IStrategy):
         self._cached_signal_time: Optional[str]= None
         self._cached_signal_data: Optional[pd.DataFrame] = None
         self._cached_stake_time:Optional[str] = None
-        self._cached_stake_data:Optional[pd.DataFrame] = None
+        self._cached_long_stake:Optional[float] = None
+        self._cached_short_stake:Optional[float] = None
         self._cached_adjust_position = dict()
 
     def informative_pairs(self):
@@ -160,7 +161,6 @@ class ArbitrageBothSides(IStrategy):
                 slowperiod = MEDIUM_MULTIPLES * MACD_SLOW,
                 signalperiod = MEDIUM_MULTIPLES * MACD_SIGNAL
             )
-
             medium = np.array(medium) / df[f"{pair}_close"]
 
             _,_,slow = ta.MACD( #type: ignore
@@ -169,7 +169,6 @@ class ArbitrageBothSides(IStrategy):
                 slowperiod = LONG_MULTIPLES * MACD_SLOW,
                 signalperiod = LONG_MULTIPLES * MACD_SIGNAL
             )
-
             slow = slow / df[f"{pair}_close"]
 
             add_df = pd.DataFrame(index=df.index,data={
@@ -185,8 +184,7 @@ class ArbitrageBothSides(IStrategy):
         return df
 
     def _calculate_macd_diff_with_base_pair(self, df:pd.DataFrame,pairs:List[str]):
-        print("...calculating MACD diff between altcoins and BTC...")
-
+        logger.info("...calculating MACD diff between altcoins and BTC...")
         #Calculating diff
         for pair in pairs:
             for cycle in MARKET_CYCLES:
@@ -208,7 +206,7 @@ class ArbitrageBothSides(IStrategy):
 
     def _calculate_macd_diff_mean(self,df:pd.DataFrame,pairs:list[str]):
         #Calculating rolling diff mean
-        print("...calculating MACD diff mean...")
+        logger.info("...calculating MACD diff mean...")
         for pair in pairs:
             for cycle in MARKET_CYCLES:
                 diff_bear_mean = df[f"{pair}_DIFF_{cycle}_BEAR"].expanding().mean()
@@ -317,15 +315,9 @@ class ArbitrageBothSides(IStrategy):
 
         if current_pair in long_pairs:
             long_signal = 1
-            # logger.info(f"long_pairs = {long_pairs}")
-            # logger.info(f"long_dict = {long_dict}")
-            # logger.info(f"{row['date']}: LONG {current_pair}: diff_mean = {long_dict[current_pair]}")
 
         if current_pair in short_pairs:
             short_signal = 1
-            # logger.info(f"short_pairs = {short_pairs}")
-            # logger.info(f"short_dict = {short_dict}")
-            # logger.info(f"{row['date']}: SHORT {current_pair}: diff_mean = {short_dict[current_pair]}")
 
         return long_signal, short_signal
 
@@ -340,17 +332,13 @@ class ArbitrageBothSides(IStrategy):
         :param metadata: Additional information, like the currently traded pair
         :return: a Dataframe with all mandatory indicators for the strategies
         """
-        # logger.info("populate_indicators: IN")
-
         latest_date = dataframe.iloc[-1]["date"]
 
         if (self._cached_indicator_time == latest_date) & (self._cached_indicator_data is not None):
-            # logger.info("return cached dataframe")
             dataframe = dataframe.merge(self._cached_indicator_data,on="date")  #type: ignore
             return dataframe
 
         pairs = self.dp.current_whitelist()
-        # logger.info(f"whitelist_pairs: {pairs}")
 
         for pair in self.dp.current_whitelist():
             informative:pd.DataFrame= self.dp.get_pair_dataframe(
@@ -369,8 +357,6 @@ class ArbitrageBothSides(IStrategy):
         self._cached_indicator_time = dataframe.iloc[-1]["date"]
         self._cached_indicator_data = dataframe.drop(["open","high","low","close","volume"],axis=1)
 
-        # logger.info("populate_indicators: OUT")
-
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -380,7 +366,6 @@ class ArbitrageBothSides(IStrategy):
         :param metadata: Additional information, like the currently traded pair
         :return: DataFrame with entry columns populated
         """
-        # logger.info("populate_entry_trend: IN")
         logger.info(f"populate_entry_trend: {metadata['pair']}")
 
         latest = dataframe.iloc[-1]["date"]
@@ -395,14 +380,6 @@ class ArbitrageBothSides(IStrategy):
         dataframe["enter_long"] = df[f"{pair}_LONG"]    #type: ignore
         dataframe["enter_short"] = df[f"{pair}_SHORT"]  #type: ignore
 
-        # dataframe["enter_long"], dataframe["enter_short"] =  dataframe.apply(lambda row: self.get_trade_signal(
-        #     row=row,
-        #     current_pair=metadata["pair"],
-        #     pairs = self.dp.current_whitelist()
-        #     ),
-        #     result_type="expand",
-        #     axis=1
-        # )
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -414,14 +391,13 @@ class ArbitrageBothSides(IStrategy):
         """
         return dataframe
 
-    def bot_start_loop(self):
-        logger.info("bot_start_loop: IN")
-        logger.info("bot_start_loop: OUT")
+    def bot_loop_start(self):
+        logger.info("bot_loop_start: IN")
+        logger.info("bot_loop_start: OUT")
 
     def bot_start(self):
         logger.info("bot_start: IN")
         logger.info("bot_start: OUT")
-
 
     def custom_stake_amount(self, pair: str, current_time: datetime, current_rate: float,
                             proposed_stake: float, min_stake: Optional[float], max_stake: float,
@@ -436,25 +412,8 @@ class ArbitrageBothSides(IStrategy):
         """
         # logger.info("custom_stake_amount: IN")
 
-        n_current_long = 0
-        n_current_short = 0
-        sum_current_long = 0
-        sum_current_short = 0
-
-        open_pairs: List[str]= []
-
-        for trade in LocalTrade.trades_open:
-            if trade.amount>0:
-                if trade.is_short:
-                    n_current_short += 1
-                    sum_current_short += trade.amount
-                else:
-                    n_current_long += 1
-                    sum_current_long += trade.amount
-                open_pairs.append(trade.pair)
-
+        open_pairs = [trade.pair for trade in Trade.get_open_trades()]
         dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
-
         current_candle = dataframe.iloc[-1]
 
         long_pairs, short_pairs = self.arbitrate_both_sides(
@@ -462,42 +421,57 @@ class ArbitrageBothSides(IStrategy):
             pairs=self.dp.current_whitelist()
         )
 
-        n_new_long = len(long_pairs)
-        # for pair in long_pairs:
-        #     if pair in open_pairs:
-        #         n_new_long += -1
+        if self._cached_stake_time == current_candle["date"]:
+            long_stake = self._cached_long_stake
+            short_stake = self._cached_short_stake
+        else:
+            invest_budget = min(
+                self.wallets.get_total_stake_amount()/INVESTMENT_TRUNK, #type: ignore
+                self.wallets.get_available_stake_amount() #type: ignore
+            )
+            long_sum, short_sum, _, _ \
+                = self.get_open_trades_info()
 
-        n_new_short = len(short_pairs)
-        # for pair in short_pairs:
-        #     if pair in open_pairs:
-        #         n_new_short += -1
+            long_budget = max(0,0.5 * (short_sum - long_sum + invest_budget))
+            short_budget = invest_budget - long_budget
 
-        available_stake_amount = self.wallets.get_available_stake_amount() #type: ignore
-        invest_trunk = self.wallets.get_total_stake_amount()/INVESTMENT_TRUNK #type: ignore
-        invest_budget = min(available_stake_amount,invest_trunk)
+            long_stake = long_budget/len(long_pairs) if len(long_pairs) > 0 else 0
+            short_stake = short_budget/len(short_pairs) if len(short_pairs) > 0 else 0
 
-        long_stake_total = invest_budget/2
-        short_stake_total = invest_budget/2
-
-        long_stake = long_stake_total/n_new_long if n_new_long > 0 else 0
-        short_stake = short_stake_total/n_new_short if n_new_short > 0 else 0
-
-        result_stake = long_stake if side == "long" else short_stake
+            self._cached_long_stake = long_stake
+            self._cached_short_stake = short_stake
 
         #Update adjust position dictionary
+        current_date = current_candle["date"]
         for pair in long_pairs:
             if pair in open_pairs:
                 if pair not in self._cached_adjust_position.keys():
                     self._cached_adjust_position[pair] = dict()
-                self._cached_adjust_position[pair][current_candle["date"]] = (pair,"long",result_stake)
+                if current_date not in self._cached_adjust_position[pair].keys():
+                    self._cached_adjust_position[pair][current_date] = ("long",long_stake)
 
         for pair in short_pairs:
             if pair in open_pairs:
                 if pair not in self._cached_adjust_position.keys():
                     self._cached_adjust_position[pair] = dict()
-                self._cached_adjust_position[pair][current_candle["date"]] = (pair,"short",result_stake)
+                if current_date not in self._cached_adjust_position[pair].keys():
+                        self._cached_adjust_position[pair][current_date] = ("short",short_stake)
 
-        return result_stake
+        return long_stake if side == "long" else short_stake    #type: ignore
+
+    def get_open_trades_info(self):
+        long_sum = 0
+        short_sum = 0
+        long_num = 0
+        short_num = 0
+        for trade in Trade.get_open_trades():
+            if trade.trade_direction == "long":
+                long_sum+=trade.stake_amount
+                long_num+=1
+            else:
+                short_sum+=trade.stake_amount
+                short_num+=1
+        return long_sum, short_sum,long_num, short_num
 
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
                  proposed_leverage: float, max_leverage: float, entry_tag: Optional[str],
@@ -514,7 +488,13 @@ class ArbitrageBothSides(IStrategy):
         :param side: 'long' or 'short' - indicating the direction of the proposed trade
         :return: A leverage amount, which is between 1.0 and max_leverage.
         """
+
         return LEVERAGE_RATIO
+
+    def backtest_loop_start_callback(self,current_time):
+        logger.info(current_time)
+        long_sum, short_sum,_,_ = self.get_open_trades_info()
+        logger.info(f"Long stake ratio: {long_sum/(long_sum+short_sum) if (long_sum+short_sum)>0 else 0}")
 
     def adjust_trade_position(self, trade: Trade, current_time: datetime,
                               current_rate: float, current_profit: float,
@@ -547,32 +527,30 @@ class ArbitrageBothSides(IStrategy):
                        Positive values to increase position, Negative values to decrease position.
                        Return None for no action.
         """
-        logger.debug("adjust_trade_position:IN")
-
         pair: str = trade.pair
 
         dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
         current_date = dataframe.iloc[-1]["date"]
-
         adjust_position_dict: Optional[Tuple] = self._cached_adjust_position[pair] \
             if pair in self._cached_adjust_position.keys() else None
 
-        if (adjust_position_dict):
-            if current_date in adjust_position_dict.keys():
-                (adj_pair,side,amount) = adjust_position_dict[current_date]
+        if (adjust_position_dict is None):
+            return None
 
-                if (pair == adj_pair):
-                    if (trade.is_short == (side=="short")):
-                        # logger.info(f"Asked to increase {pair} by amount {amount}")
-                        result_amount = amount
-                    else:
-                        if amount < trade.stake_amount:
-                            # logger.info(f"Asked to decrease {pair} by amount {amount}")
-                            result_amount = -amount
-                        else:
-                            # logger.info(f"Want to open oppsotive position for {pair} by amount {amount - trade.stake_amount}")
-                            result_amount = trade.stake_amount
-                    return result_amount
+        if current_date not in adjust_position_dict.keys(): #type:ignore
+            return None
 
-        logger.debug("adjust_trade_position:OUT")
-        return None
+        if adjust_position_dict[current_date] == -1:    #type:ignore
+            return None
+
+        (side,amount) = adjust_position_dict[current_date]  #type:ignore
+        adjust_position_dict[current_date] = -1 #type:ignore
+
+        if (trade.trade_direction == side):
+            result_amount = amount
+        else:
+            if amount < trade.stake_amount:
+                result_amount = -amount
+            else:
+                result_amount = trade.stake_amount
+        return result_amount
