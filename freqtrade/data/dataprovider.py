@@ -25,6 +25,7 @@ from freqtrade.util import PeriodicCache
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 NO_EXCHANGE_EXCEPTION = 'Exchange is not available to DataProvider.'
 MAX_DATAFRAME_CANDLES = 1000
@@ -39,12 +40,14 @@ class DataProvider:
         pairlists=None,
         rpc: Optional[RPCManager] = None
     ) -> None:
+        logger.debug("__init__:IN")
         self._config = config
         self._exchange = exchange
         self._pairlists = pairlists
         self.__rpc = rpc
         self.__cached_pairs: Dict[PairWithTimeframe, Tuple[DataFrame, datetime]] = {}
-        self.__slice_index: Optional[int] = None
+        self._slice_index: Optional[int] = None
+        print(self._slice_index)
         self.__cached_pairs_backtesting: Dict[PairWithTimeframe, DataFrame] = {}
         self.__producer_pairs_df: Dict[str,
                                        Dict[PairWithTimeframe, Tuple[DataFrame, datetime]]] = {}
@@ -59,13 +62,16 @@ class DataProvider:
 
         self.producers = self._config.get('external_message_consumer', {}).get('producers', [])
         self.external_data_enabled = len(self.producers) > 0
+        logger.debug("__init__:OUT")
 
     def _set_dataframe_max_index(self, limit_index: int):
         """
         Limit analyzed dataframe to max specified index.
         :param limit_index: dataframe index.
         """
-        self.__slice_index = limit_index
+        # logger.debug("_set_dataframe_max_index:IN")
+        self._slice_index = limit_index
+        # logger.debug("_set_dataframe_max_index:OUT")
 
     def _set_cached_df(
         self,
@@ -83,9 +89,11 @@ class DataProvider:
         :param dataframe: analyzed dataframe
         :param candle_type: Any of the enum CandleType (must match trading mode!)
         """
+        logger.debug("_set_cached_df:IN")
         pair_key = (pair, timeframe, candle_type)
         self.__cached_pairs[pair_key] = (
             dataframe, datetime.now(timezone.utc))
+        logger.debug("_set_cached_df:OUT")
 
     # For multiple producers we will want to merge the pairlists instead of overwriting
     def _set_producer_pairs(self, pairlist: List[str], producer_name: str = "default"):
@@ -381,8 +389,8 @@ class DataProvider:
                 df, date = self.__cached_pairs[pair_key]
             else:
                 df, date = self.__cached_pairs[pair_key]
-                if self.__slice_index is not None:
-                    max_index = self.__slice_index
+                if self._slice_index is not None:
+                    max_index = self._slice_index
                     df = df.iloc[max(0, max_index - MAX_DATAFRAME_CANDLES):max_index]
             return df, date
         else:
@@ -418,7 +426,7 @@ class DataProvider:
         # Don't reset backtesting pairs -
         # otherwise they're reloaded each time during hyperopt due to with analyze_per_epoch
         # self.__cached_pairs_backtesting = {}
-        self.__slice_index = 0
+        self._slice_index = 0
 
     # Exchange functions
 

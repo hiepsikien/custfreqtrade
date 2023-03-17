@@ -42,6 +42,7 @@ from freqtrade.wallets import Wallets
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Indexes for backtest tuples
 DATE_IDX = 0
@@ -72,7 +73,7 @@ class Backtesting:
     """
 
     def __init__(self, config: Config) -> None:
-
+        logger.debug("__init__:IN")
         LoggingMixin.show_output = False
         self.config = config
         self.results: Dict[str, Any] = {}
@@ -161,6 +162,7 @@ class Backtesting:
         migrate_binance_futures_data(config)
 
         self.init_backtest()
+        logger.debug("__init__:OUT")
 
     @staticmethod
     def cleanup():
@@ -183,13 +185,14 @@ class Backtesting:
         self.futures_data: Dict[str, DataFrame] = {}
 
     def init_backtest(self):
-
+        logger.debug("init_backtest:IN")
         self.prepare_backtest(False)
 
         self.wallets = Wallets(self.config, self.exchange, log=False)
 
         self.progress = BTProgress()
         self.abort = False
+        logger.debug("init_backtest:OUT")
 
     def _set_strategy(self, strategy: IStrategy):
         """
@@ -344,7 +347,7 @@ class Backtesting:
         :param processed: a processed dictionary with format {pair, data}, which gets cleared to
         optimize memory usage!
         """
-
+        logger.debug("_get_ohlcv_as_lists:IN")
         data: Dict = {}
         self.progress.init_step(BacktestState.CONVERT, len(processed))
 
@@ -362,9 +365,11 @@ class Backtesting:
                 self.strategy.advise_entry(pair_data, {'pair': pair}),
                 {'pair': pair}
             ).copy()
+
             # Trim startup period from analyzed dataframe
             df_analyzed = processed[pair] = pair_data = trim_dataframe(
                 df_analyzed, self.timerange, startup_candles=self.required_startup)
+
             # Update dataprovider cache
             self.dataprovider._set_cached_df(
                 pair, self.timeframe, df_analyzed, self.config['candle_type_def'])
@@ -388,6 +393,8 @@ class Backtesting:
             # Convert from Pandas to list for performance reasons
             # (Looping Pandas is slow.)
             data[pair] = df_analyzed[HEADERS].values.tolist() if not df_analyzed.empty else []
+        logger.debug("_get_ohlcv_as_lists:OUT")
+
         return data
 
     def _get_close_rate(self, row: Tuple, trade: LocalTrade, exit: ExitCheckTuple,
@@ -1042,6 +1049,7 @@ class Backtesting:
 
     def validate_row(
             self, data: Dict, pair: str, row_index: int, current_time: datetime) -> Optional[Tuple]:
+        # logger.debug("validate_row:IN")
         try:
             # Row is treated as "current incomplete candle".
             # entry / exit signals are shifted by 1 to compensate for this.
@@ -1054,6 +1062,7 @@ class Backtesting:
         # Waits until the time-counter reaches the start of the data for this pair.
         if row[DATE_IDX] > current_time:
             return None
+        # logger.debug("validate_row:OUT")
         return row
 
     def backtest_loop(
@@ -1142,6 +1151,7 @@ class Backtesting:
         :param end_date: backtesting timerange end datetime
         :return: DataFrame with trades (results of backtesting)
         """
+        logger.debug("backtest:IN")
         self.prepare_backtest(self.enable_protections)
         # Ensure wallets are uptodate (important for --strategy-list)
         self.wallets.update()
@@ -1156,6 +1166,7 @@ class Backtesting:
         self.progress.init_step(BacktestState.BACKTEST, int(
             (end_date - start_date) / timedelta(minutes=self.timeframe_min)))
         # Loop timerange and get candle for each pair at that point in time
+
         while current_time <= end_date:
             open_trade_count_start = LocalTrade.bt_open_open_trade_count
             self.check_abort()
@@ -1221,6 +1232,7 @@ class Backtesting:
         self.wallets.update()
 
         results = trade_list_to_dataframe(LocalTrade.trades)
+        logger.debug("backtest:OUT")
         return {
             'results': results,
             'config': self.strategy.config,

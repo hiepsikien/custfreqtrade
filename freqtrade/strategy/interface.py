@@ -27,6 +27,7 @@ from freqtrade.wallets import Wallets
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 CUSTOM_EXIT_MAX_LENGTH = 64
 
 
