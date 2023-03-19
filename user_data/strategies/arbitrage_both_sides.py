@@ -5,13 +5,14 @@
 # --- Do not remove these libs ---
 import sys
 from freqtrade.constants import Config
+from freqtrade.exchange.exchange_utils import amount_to_contract_precision
 sys.path.append("/home/andy/CryptoTradingPlatform/freqtrade")
 
 from datetime import datetime, timedelta
 import numpy as np  # noqaclear
 import pandas as pd  # noqa
 from pandas import DataFrame
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from freqtrade.strategy import IStrategy
 
 # --------------------------------
@@ -22,6 +23,8 @@ import logging
 from freqtrade.persistence.trade_model import Trade
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+import psutil
+import os
 
 # This class is a sample. Feel free to customize it.
 
@@ -48,7 +51,16 @@ LEVERAGE_RATIO = 2.0
 TAKE_PROFIT_RATE = 0.5
 STOP_LOSS_RATE = -0.25
 STARTUP_CANDLE_COUNT = 365 * 6
-
+TIMEFRAME_IN_MIN = {
+    "1m":1,
+    "5m":5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 4 * 60,
+    "12h": 12 * 60,
+    "1d": 24 * 60
+}
 class ArbitrageBothSides(IStrategy):
     """
     This is a sample strategy to inspire you.
@@ -145,10 +157,13 @@ class ArbitrageBothSides(IStrategy):
         self._cached_indicator_data: Optional[pd.DataFrame] = None
         self._cached_signal_time: Optional[str]= None
         self._cached_signal_data: Optional[pd.DataFrame] = None
-        self._cached_stake_time:Optional[str] = None
+        self._cached_stake_time:Optional[datetime] = None
         self._cached_long_stake:Optional[float] = None
         self._cached_short_stake:Optional[float] = None
         self._cached_adjust_position = dict()
+
+        self._long_pairs:Dict[datetime,List[str]] = dict()
+        self._short_pairs:Dict[datetime,List[str]] = dict()
 
     def informative_pairs(self):
         """
@@ -258,14 +273,18 @@ class ArbitrageBothSides(IStrategy):
         return df
 
     def foo(self, row):
-        longs, shorts = self.arbitrate_both_sides(
+        long_pairs, short_pairs = self.arbitrate_both_sides(
             row = row,
             pairs = self.dp.current_whitelist()
         )
+
+        self._long_pairs[row["date"]] = long_pairs
+        self._short_pairs[row["date"]] = short_pairs
+
         return pd.Series(
             {
-                "longs": longs,
-                "shorts": shorts
+                "longs": long_pairs,
+                "shorts": short_pairs
             }
         )
 
@@ -475,21 +494,20 @@ class ArbitrageBothSides(IStrategy):
         Returns:
             float: stake amount, invest amount
         """
-        # logger.info("custom_stake_amount: IN")
+        # logger.debug("custom_stake_amount: IN")
 
         open_pairs = [trade.pair for trade in Trade.get_open_trades()]
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
-        current_candle = dataframe.iloc[-1]
-
-        long_pairs, short_pairs = self.arbitrate_both_sides(
-            row = current_candle,
-            pairs=self.dp.current_whitelist()
-        )
-
-        if self._cached_stake_time == current_candle["date"]:
+        latest = current_time-timedelta(minutes=TRADING_TIMEFRAME_IN_MIN)
+        if self._cached_stake_time == latest:
             long_stake = self._cached_long_stake
             short_stake = self._cached_short_stake
         else:
+            long_pairs = self._long_pairs[latest]
+            short_pairs = self._short_pairs[latest]
+
+            # logger.info(">TO LONG:{}".format(long_pairs))
+            # logger.info(">TO SHORT:{}".format(short_pairs))
+
             invest_budget = min(
                 self.wallets.get_total_stake_amount()/INVEST_ROUNDS, #type: ignore
                 self.wallets.get_available_stake_amount() #type: ignore
@@ -505,22 +523,22 @@ class ArbitrageBothSides(IStrategy):
 
             self._cached_long_stake = long_stake
             self._cached_short_stake = short_stake
+            self._cached_stake_time = latest
 
-        #Update adjust position dictionary
-        current_date = current_candle["date"]
-        for pair in long_pairs:
-            if pair in open_pairs:
-                if pair not in self._cached_adjust_position.keys():
-                    self._cached_adjust_position[pair] = dict()
-                if current_date not in self._cached_adjust_position[pair].keys():
-                    self._cached_adjust_position[pair][current_date] = ("long",long_stake)
+            #Update adjust position dictionary
+            for pair in long_pairs:
+                if pair in open_pairs:
+                    if pair not in self._cached_adjust_position.keys():
+                        self._cached_adjust_position[pair] = dict()
+                    if latest not in self._cached_adjust_position[pair].keys():
+                        self._cached_adjust_position[pair][latest] = ("long",long_stake)
 
-        for pair in short_pairs:
-            if pair in open_pairs:
-                if pair not in self._cached_adjust_position.keys():
-                    self._cached_adjust_position[pair] = dict()
-                if current_date not in self._cached_adjust_position[pair].keys():
-                        self._cached_adjust_position[pair][current_date] = ("short",short_stake)
+            for pair in short_pairs:
+                if pair in open_pairs:
+                    if pair not in self._cached_adjust_position.keys():
+                        self._cached_adjust_position[pair] = dict()
+                    if latest not in self._cached_adjust_position[pair].keys():
+                            self._cached_adjust_position[pair][latest] = ("short",short_stake)
 
         return long_stake if side == "long" else short_stake    #type: ignore
 
@@ -569,6 +587,7 @@ class ArbitrageBothSides(IStrategy):
         """
         self.process_at_loop_start(current_time)
 
+
     def process_at_loop_start(self,current_time:datetime):
         """
         Thing to do at the beginning of each loop.
@@ -576,13 +595,102 @@ class ArbitrageBothSides(IStrategy):
         Args:
             current_time (datetime): current time
         """
-        # Print status
+        logger.debug("process_at_loop_start:IN")
         long_sum, short_sum,_,_ = self.get_open_trades_info()
         current_stake = long_sum + short_sum
-        long_stake_ratio = round(long_sum/(long_sum+short_sum) if (long_sum+short_sum)>0 else 0,3)
-        total_stake = self.wallets.get_total_stake_amount()
+        long_stake_ratio = round(long_sum/(long_sum+short_sum) if (long_sum+short_sum)>0 else 0,2)
+        total_stake = self.wallets.get_total_stake_amount()     #type: ignore
         stake_usage = round(current_stake/total_stake if total_stake > 0 else 0,3)
-        logger.info(f"{current_time} | Long stake: {long_stake_ratio} | Usaged stake: {stake_usage}")
+        total_stake_value = int(self.wallets.get_total_stake_amount()) #type: ignore
+
+        process = psutil.Process(os.getpid())
+        mem_usage = int(process.memory_info().rss/1_000_000)
+
+        logger.info(f"{current_time}| Long pct: {long_stake_ratio}| Used pct: "\
+            f"{stake_usage}| Total: {total_stake_value}USDT| Mem: {mem_usage}M")
+
+        logger.info(f"Available stake amount:{self.wallets.get_available_stake_amount()}")
+        logger.info(f"Total stake amount:{self.wallets.get_total_stake_amount()}")
+
+        #Print current position:
+        logger.info("Current open positions:")
+        long_open_trades = []
+        short_open_trades = []
+        for trade in Trade.get_open_trades():
+            if trade.trade_direction == "long":
+                long_open_trades.append((trade.pair,f"{trade.stake_amount}{trade.stake_currency}"))
+            else:
+                short_open_trades.append((trade.pair,f"{trade.stake_amount}{trade.stake_currency}"))
+
+        logger.info("OPEN LONG: {}".format(long_open_trades))
+        logger.info("OPEN SHORT: {}".format(short_open_trades))
+        #Print entry signal
+        latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[TIMEFRAME])
+        long_pairs = self._long_pairs[latest_time]
+        short_pairs = self._short_pairs[latest_time]
+        logger.info("TO LONG:{}".format(long_pairs))
+        logger.info("TO SHORT:{}".format(short_pairs))
+
+        logger.debug("process_at_loop_start:OUT")
+
+    def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
+                            time_in_force: str, current_time: datetime, entry_tag: Optional[str],
+                            side: str, **kwargs) -> bool:
+        """
+        Called right before placing a entry order.
+        Timing for this function is critical, so avoid doing heavy computations or
+        network requests in this method.
+
+        For full documentation please go to https://www.freqtrade.io/en/latest/strategy-advanced/
+
+        When not implemented by a strategy, returns True (always confirming).
+
+        :param pair: Pair that's about to be bought/shorted.
+        :param order_type: Order type (as configured in order_types). usually limit or market.
+        :param amount: Amount in target (base) currency that's going to be traded.
+        :param rate: Rate that's going to be used when using limit orders
+                     or current rate for market orders.
+        :param time_in_force: Time in force. Defaults to GTC (Good-til-cancelled).
+        :param current_time: datetime object, containing the current datetime
+        :param entry_tag: Optional entry_tag (buy_tag) if provided with the buy signal.
+        :param side: 'long' or 'short' - indicating the direction of the proposed trade
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        :return bool: When True is returned, then the buy-order is placed on the exchange.
+            False aborts the process
+        """
+        logger.info(f"Placed entry {side} order of {pair} for {amount}")
+        return True
+
+    def confirm_trade_exit(self, pair: str, trade: Trade, order_type: str, amount: float,
+                           rate: float, time_in_force: str, exit_reason: str,
+                           current_time: datetime, **kwargs) -> bool:
+        """
+        Called right before placing a regular exit order.
+        Timing for this function is critical, so avoid doing heavy computations or
+        network requests in this method.
+
+        For full documentation please go to https://www.freqtrade.io/en/latest/strategy-advanced/
+
+        When not implemented by a strategy, returns True (always confirming).
+
+        :param pair: Pair for trade that's about to be exited.
+        :param trade: trade object.
+        :param order_type: Order type (as configured in order_types). usually limit or market.
+        :param amount: Amount in base currency.
+        :param rate: Rate that's going to be used when using limit orders
+                     or current rate for market orders.
+        :param time_in_force: Time in force. Defaults to GTC (Good-til-cancelled).
+        :param exit_reason: Exit reason.
+            Can be any of ['roi', 'stop_loss', 'stoploss_on_exchange', 'trailing_stop_loss',
+                           'exit_signal', 'force_exit', 'emergency_exit']
+        :param current_time: datetime object, containing the current datetime
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        :return bool: When True, then the exit-order is placed on the exchange.
+            False aborts the process
+        """
+        logger.info(f"Placed exit order of {pair} for {amount}")
+
+        return True
 
     def adjust_trade_position(self, trade: Trade, current_time: datetime,
                               current_rate: float, current_profit: float,
@@ -635,8 +743,10 @@ class ArbitrageBothSides(IStrategy):
         adjust_position_dict[latest] = -1 #type:ignore
 
         if (trade.trade_direction == side):
+            logger.info(f"Asked to increase {side} {pair} for {amount} {trade.stake_currency}")
             result_amount = amount
         else:
+            logger.info(f"Asked to decrease {side} {pair} for {amount} {trade.stake_currency}")
             if amount < trade.stake_amount:
                 result_amount = -amount
             else:
