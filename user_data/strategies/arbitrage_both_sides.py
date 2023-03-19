@@ -4,6 +4,8 @@
 # isort: skip_file
 # --- Do not remove these libs ---
 import sys
+
+from matplotlib.style import available
 from freqtrade.constants import Config
 from freqtrade.exchange.exchange_utils import amount_to_contract_precision
 sys.path.append("/home/andy/CryptoTradingPlatform/freqtrade")
@@ -474,7 +476,7 @@ class ArbitrageBothSides(IStrategy):
         """ Thing to do at bot loop start
         """
         logger.debug("bot_loop_start: IN")
-        self.process_at_loop_start(None)
+        self.process_at_loop_start(None)    #type: ignore
         logger.debug("bot_loop_start: OUT")
 
     def bot_start(self):
@@ -599,8 +601,8 @@ class ArbitrageBothSides(IStrategy):
         long_sum, short_sum,_,_ = self.get_open_trades_info()
         current_stake = long_sum + short_sum
         long_stake_ratio = round(long_sum/(long_sum+short_sum) if (long_sum+short_sum)>0 else 0,2)
-        total_stake = self.wallets.get_total_stake_amount()     #type: ignore
-        stake_usage = round(current_stake/total_stake if total_stake > 0 else 0,3)
+        available_stake = self.wallets.get_available_stake_amount()    #type: ignore
+        stake_usage = round(current_stake/(current_stake + available_stake),2)
         total_stake_value = int(self.wallets.get_total_stake_amount()) #type: ignore
 
         process = psutil.Process(os.getpid())
@@ -609,8 +611,8 @@ class ArbitrageBothSides(IStrategy):
         logger.info(f"{current_time}| Long pct: {long_stake_ratio}| Used pct: "\
             f"{stake_usage}| Total: {total_stake_value}USDT| Mem: {mem_usage}M")
 
-        logger.info(f"Available stake amount:{self.wallets.get_available_stake_amount()}")
-        logger.info(f"Total stake amount:{self.wallets.get_total_stake_amount()}")
+        logger.info(f"Available stake amount:{self.wallets.get_available_stake_amount()}")  #type:ignore
+        logger.info(f"Total stake amount:{self.wallets.get_total_stake_amount()}")  #type:ignore
 
         #Print current position:
         logger.info("Current open positions:")
@@ -658,7 +660,7 @@ class ArbitrageBothSides(IStrategy):
         :return bool: When True is returned, then the buy-order is placed on the exchange.
             False aborts the process
         """
-        logger.info(f"Placed entry {side} order of {pair} for {amount}")
+        logger.info(f"Placed {side} entry of {amount}{pair}")
         return True
 
     def confirm_trade_exit(self, pair: str, trade: Trade, order_type: str, amount: float,
@@ -688,7 +690,7 @@ class ArbitrageBothSides(IStrategy):
         :return bool: When True, then the exit-order is placed on the exchange.
             False aborts the process
         """
-        logger.info(f"Placed exit order of {pair} for {amount}")
+        logger.info(f"Placed exit of {amount}{pair}")
 
         return True
 
