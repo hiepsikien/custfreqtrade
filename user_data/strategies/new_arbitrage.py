@@ -4,11 +4,11 @@
 # isort: skip_file
 # --- Do not remove these libs ---
 import sys
-from turtle import clear
-from freqtrade import data
+import os
+import psutil
 from freqtrade.constants import Config
-from freqtrade.data.converter import trim_dataframe
 from freqtrade.data.dataprovider import MAX_DATAFRAME_CANDLES
+from freqtrade.enums.runmode import RunMode
 sys.path.append("/home/andy/CryptoTradingPlatform/freqtrade")
 
 from datetime import datetime
@@ -17,10 +17,10 @@ import pandas as pd  # noqa
 from pandas import DataFrame
 from typing import Optional, List, Tuple, Dict
 from freqtrade.strategy import IStrategy
-from freqtrade.enums import CandleType, RunMode
+from freqtrade.enums import CandleType
 from datetime import timezone, timedelta
 from freqtrade.data.dataprovider import MAX_DATAFRAME_CANDLES
-from freqtrade.data.converter import trim_dataframe
+from freqtrade.data.history import load_pair_history
 
 # --------------------------------
 # Add your lib to import here
@@ -30,7 +30,6 @@ import logging
 from freqtrade.persistence.trade_model import Trade
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-from freqtrade.configuration import TimeRange, timerange
 # This class is a sample. Feel free to customize it.
 
 # Market related parameters
@@ -41,22 +40,30 @@ MACD_SIGNAL= 9
 LONG_MULTIPLES = 8
 MEDIUM_MULTIPLES = 3
 SHORT_MULTIPLES = 1
-MARKET_CYCLES = ["FAST","MEDIUM","SLOW"]
+MARKET_CYCLES = ["MEDIUM","SLOW"]
 BASE_PAIR_NAME = "BTC/USDT:USDT"
 MARKET_CYCLE = "SLOW"
-ALTCOIN_CYCLE_FAST = "FAST"
 ALTCOIN_CYCLE = "MEDIUM"
-
+TIMEFRAME_IN_MIN = {
+    "1m":1,
+    "5m":5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 4 * 60,
+    "12h": 12 * 60,
+    "1d": 24 * 60
+}
 #Trading related parameters
-TIMEFRAME = "30m"
-TRADING_TIMEFRAME_IN_MIN = 4 * 60
-PAIR_NUMBER = 3
-HOLDING_PERIOD_IN_TIMEFRAMES = 2 * 24
+TIMEFRAME = "4h"
+PAIR_NUMBER = 5
+HOLDING_PERIOD_IN_TIMEFRAMES = 3 * 6
 INVEST_ROUNDS = HOLDING_PERIOD_IN_TIMEFRAMES / 2
 LEVERAGE_RATIO = 2.0
-TAKE_PROFIT_RATE = 0.07
-STOP_LOSS_RATE = -0.05
-STARTUP_CANDLE_COUNT = MACD_FAST * LONG_MULTIPLES
+TAKE_PROFIT_RATE = 0.5
+STOP_LOSS_RATE = -0.25
+STARTUP_CANDLE_COUNT = 30 * 4
+HISTORIC_CANDLE_COUNT = 365 * 4
 
 class NewArbitrage(IStrategy):
     """
@@ -89,7 +96,7 @@ class NewArbitrage(IStrategy):
     # This attribute will be overridden if the config file contains "minimal_roi".
     minimal_roi = {
         "0": TAKE_PROFIT_RATE * LEVERAGE_RATIO,
-        f"{HOLDING_PERIOD_IN_TIMEFRAMES * TRADING_TIMEFRAME_IN_MIN}":-1
+        f"{HOLDING_PERIOD_IN_TIMEFRAMES * TIMEFRAME_IN_MIN[TIMEFRAME]}":-1
     }
 
     # Optimal stoploss designed for the strategy.
@@ -150,13 +157,11 @@ class NewArbitrage(IStrategy):
             config (Config): _description_
         """
         super().__init__(config)
-        self._cached_signal_time: Optional[str]= None
-        self._cached_signal_data: Optional[pd.DataFrame] = None
-        self._cached_stake_time:Optional[str] = None
-        self._cached_long_stake:Optional[float] = None
-        self._cached_short_stake:Optional[float] = None
-        self._cached_adjust_position = dict()
-        self._cached_shared_data: Dict[Tuple[str,CandleType], Tuple[DataFrame, datetime]] = {}
+        self.custom_stake_amount_dict: Dict[datetime,Tuple[float,float]] = dict()
+        self.custom_adjust_position_amount_dict = dict()
+        self.custom_shared_analyzed_data_dict: Dict[Tuple[str,CandleType], Tuple[DataFrame, datetime]] = {}
+        self.custom_cached_shared_analyzed_data_time: Optional[str] = None
+        self.custom_trade_signal_dict:Dict[datetime,Tuple[List[str],List[str]]] = dict()
 
     def informative_pairs(self):
         """
@@ -189,13 +194,13 @@ class NewArbitrage(IStrategy):
         """
         logger.debug("...calculating MACD ...")
         for pair in pairs:
-            _,_,fast = ta.MACD(                 #type: ignore
-                df[f"{pair}_close"],
-                fastperiod = SHORT_MULTIPLES * MACD_FAST,
-                slowperiod = SHORT_MULTIPLES * MACD_SLOW,
-                signalperiod = SHORT_MULTIPLES * MACD_SIGNAL
-            )
-            fast = fast/ df[f"{pair}_close"]
+            # _,_,fast = ta.MACD(                 #type: ignore
+            #     df[f"{pair}_close"],
+            #     # fastperiod = SHORT_MULTIPLES * MACD_FAST,
+            #     slowperiod = SHORT_MULTIPLES * MACD_SLOW,
+            #     signalperiod = SHORT_MULTIPLES * MACD_SIGNAL
+            # )
+            # fast = fast/ df[f"{pair}_close"]
 
             _,_,medium = ta.MACD(               #type: ignore
                 df[f"{pair}_close"],
@@ -214,7 +219,7 @@ class NewArbitrage(IStrategy):
             slow = slow / df[f"{pair}_close"]
 
             add_df = pd.DataFrame(index=df.index,data={
-                f"{pair}_FAST_MACD" : fast,
+                # f"{pair}_FAST_MACD" : fast,
                 f"{pair}_MEDIUM_MACD" : medium,
                 f"{pair}_SLOW_MACD" : slow
             })
@@ -278,16 +283,87 @@ class NewArbitrage(IStrategy):
         return df
 
     def foo(self, row):
-        longs, shorts = self.arbitrate_both_sides(
+        long_pairs, short_pairs, _,_ = self.arbitrate_both_sides(
             row = row,
             pairs = self.dp.current_whitelist()
         )
-        return pd.Series(
-            {
-                "longs": longs,
-                "shorts": shorts
-            }
-        )
+        self.custom_trade_signal_dict[row["date"]] = (long_pairs,short_pairs)
+
+    def get_new_shared_analyzed_dataframe(self):
+        """ Produce the shared analyzed dataframe
+        Returns:
+            DataFrame: dataframe
+        """
+        logger.debug("get_new_shared_analyzed_dataframe:IN")
+        pairs = self.dp.current_whitelist()
+        dataframe:Optional[pd.DataFrame] = None
+
+        for pair in self.dp.current_whitelist():
+            informative:pd.DataFrame= self.dp.get_pair_dataframe(
+                pair = pair,
+                timeframe = self.timeframe
+            )
+            informative = informative[["date","close"]]
+            informative = informative.rename(columns = {"close":f"{pair}_close"})
+            if dataframe is None:
+                dataframe = informative
+            else:
+                dataframe = dataframe.merge(informative,on="date")
+                del informative
+
+        if dataframe is None:
+            logger.info("calculated_shared_analyzed_dataframe: return EMPTY")
+            return pd.DataFrame()
+
+        dataframe = self._calculate_macd(dataframe,pairs)
+        dataframe = self._calculate_macd_diff_with_base_pair(dataframe,pairs)
+        dataframe = self._calculate_macd_diff_mean(dataframe,pairs)
+
+        logger.debug("get_new_shared_analyzed_dataframe:OUT")
+        return dataframe
+
+    def update_analyzed_dataframe(self):
+        """ Update the shared analyzed dataframe
+
+        Args:
+            end_date (_type_): the last candle date
+
+        Returns:
+            _type_: _description_
+        """
+        logger.debug("update_analyzed_dataframe:IN")
+        old_df,_ = self.get_shared_analyzed_dataframe(self.timeframe)
+
+        new_df= None
+        pairs = self.dp.current_whitelist()
+        for pair in pairs:
+            informative:pd.DataFrame= self.dp.get_pair_dataframe(
+                pair = pair,
+                timeframe = self.timeframe
+            )
+            informative = informative[["date","close"]]
+            informative = informative.rename(columns = {"close":f"{pair}_close"})
+            if new_df is None:
+                new_df = informative
+            else:
+                new_df = new_df.merge(informative,on="date")
+                del informative
+
+        if new_df is None:
+            logger.info("calculated_shared_analyzed_dataframe: return EMPTY")
+            return pd.DataFrame()
+
+        new_df = self._calculate_macd(new_df,pairs)
+        new_df = self._calculate_macd_diff_with_base_pair(new_df,pairs)
+        new_df = self._calculate_macd_diff_mean(new_df,pairs)
+
+        shared_df: pd.DataFrame = pd.concat([old_df,new_df])
+        shared_df = shared_df.drop_duplicates(subset=['date'])
+        logger.debug(f"old:{len(old_df)} new:{len(new_df)} merged:{len(shared_df)}")
+        del old_df, new_df
+        self._set_cached_shared_data_df(self.timeframe,shared_df,self.config['candle_type_def'])
+        logger.debug("update_analyzed_dataframe:OUT")
+        return shared_df
 
     def calculate_entry_signal_for_all_pairs(self, analyzed_df:pd.DataFrame):
         """ Calculate entry signal for all pairs
@@ -299,23 +375,7 @@ class NewArbitrage(IStrategy):
             pd.DataFrame: processed dataframe
         """
         logger.debug("calculate_signal_for_all_pairs:IN")
-        df = analyzed_df.apply(self.foo,axis=1)
-        df["date"] = analyzed_df["date"]
-        for pair in self.dp.current_whitelist():
-            df[f"{pair}_LONG"] = df.apply(
-                lambda row: 1 if pair in row["longs"] else 0,
-                axis=1
-            )
-            df[f"{pair}_SHORT"] = df.apply(
-                lambda row: 1 if pair in row["shorts"] else 0,
-                axis=1
-            )
-        logger.debug("caluclate_signal_for_all_pairs:OUT")
-        return df.copy()
-
-    def get_score(self,diff_mean,diff_fast,diff):
-        score = (diff_mean + diff_fast + diff)/3
-        return score
+        analyzed_df.apply(self.foo,axis=1)
 
     def arbitrate_both_sides(self,
                             row:pd.Series,
@@ -343,27 +403,27 @@ class NewArbitrage(IStrategy):
             is_bull = False
         else:
             logger.debug(f"{col} is NaN")
-            return [],[]
+            return [],[], dict(), dict()
 
-        long_dict = dict()
-        short_dict = dict()
-        inv_long_dict = dict()
-        inv_short_dict = dict()
+        long_dict: Dict[str,float] = dict()
+        short_dict: Dict[str,float] = dict()
+        inv_long_dict: Dict[float,str] = dict()
+        inv_short_dict: Dict[float,str] = dict()
 
         for pair in pairs:
             if (is_bull):
-                diff_fast = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE_FAST}_BULL"])
+                # diff_fast = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE_FAST}_BULL"])
                 diff = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BULL"])
                 diff_mean = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BULL_MEAN"])
             else:
-                diff_fast = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE_FAST}_BEAR"])
+                # diff_fast = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE_FAST}_BEAR"])
                 diff = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BEAR"])
                 diff_mean = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BEAR_MEAN"])
 
-            if (diff_mean > 0) & (diff > 0) & (diff_fast > 0):
+            if (diff_mean > 0) & (diff > 0):
                 long_dict[pair] = diff_mean
                 inv_long_dict[diff_mean] = pair
-            elif (diff_mean < 0) & (diff < 0) & (diff_fast < 0):
+            elif (diff_mean < 0) & (diff < 0):
                 short_dict[pair] = diff_mean
                 inv_short_dict[diff_mean] = pair
 
@@ -380,7 +440,7 @@ class NewArbitrage(IStrategy):
             long_pairs += [BASE_PAIR_NAME]
             long_dict[BASE_PAIR_NAME] = 0
 
-        return long_pairs, short_pairs
+        return long_pairs, short_pairs, long_dict, short_dict
 
     def get_signal_from_lists(
         self,current_pair:str,long_pairs:List[str],short_pairs:List[str]):
@@ -451,6 +511,19 @@ class NewArbitrage(IStrategy):
         :return: a Dataframe with all mandatory indicators for the strategies
         """
         logger.debug("populate_indicator:IN")
+        latest_date = dataframe.iloc[-1]["date"]
+
+        if self.custom_cached_shared_analyzed_data_time is None:
+            df = self.load_historic_analyzed_dataframe()
+            logger.debug(f"len_historic: {len(df)}")
+            self._set_cached_shared_data_df(
+                timeframe = self.timeframe,
+                candle_type=self.config['candle_type_def'],
+                dataframe=df)
+
+        if (latest_date != self.custom_cached_shared_analyzed_data_time):
+            self.update_analyzed_dataframe()
+
         logger.debug("populate_indicator:OUT")
         return dataframe
 
@@ -464,34 +537,39 @@ class NewArbitrage(IStrategy):
         logger.debug("populate_entry_trend:IN")
         logger.info(f"populate_entry_trend: {metadata['pair']}")
 
-        shared_dataframe,_ = self.get_shared_analyzed_dataframe(self.timeframe,True)
-        if (shared_dataframe is None):
-            shared_dataframe = self.populate_shared_analyzed_dataframe()
-            self._set_cached_shared_data_df(self.timeframe,shared_dataframe,self.config['candle_type_def'])
-
-        latest = dataframe.iloc[-1]["date"]
-        if (shared_dataframe.iloc[-1]["date"] != dataframe.iloc[-1]["date"]):
-            raise ValueError("last candle not matching")
-
         start_date = dataframe.iloc[0]["date"]
         end_date = dataframe.iloc[-1]["date"]
 
-        time_range = TimeRange(starttype=start_date,stoptype=end_date)
-        shared_dataframe = trim_dataframe(shared_dataframe,time_range)
+        if (end_date not in self.custom_trade_signal_dict.keys()):
+            shared_dataframe,_ = self.get_shared_analyzed_dataframe(self.timeframe)
+            logger.debug(f"Dataframe date = {start_date}:{end_date}")
+            logger.debug(f"Shared_dataframe date = {shared_dataframe.iloc[0]['date']}\
+                :{shared_dataframe.iloc[-1]['date']}")
 
-        if (latest != self._cached_signal_time) | (self._cached_signal_data is None):
-            df = self.calculate_entry_signal_for_all_pairs(shared_dataframe)
-            self._cached_signal_data = df
-            self._cached_signal_time = latest
-        else:
-            df = self._cached_signal_data
+            if (shared_dataframe is None) or shared_dataframe.iloc[-1]["date"] != end_date:
+                raise ValueError("last candle not matching")
+            self.calculate_entry_signal_for_all_pairs(shared_dataframe)
 
-        pair = metadata["pair"]
-        dataframe["enter_long"] = df[f"{pair}_LONG"]    #type: ignore
-        dataframe["enter_short"] = df[f"{pair}_SHORT"]  #type: ignore
-        logger.debug(f"n_long: {dataframe['enter_long'].sum()}, n_short: {dataframe['enter_short'].sum()}")
+        dataframe["enter_long"] = dataframe.apply(
+            lambda row: self._get_signal_long(row["date"],metadata["pair"]),
+            axis=1
+        )
+        dataframe["enter_short"] = dataframe.apply(
+            lambda row: self._get_signal_short(row["date"],metadata["pair"]),
+            axis=1
+        )
         logger.debug("populate_entry_trend:OUT")
         return dataframe.copy()
+
+    def _get_signal_long(self,date:datetime,pair:str):
+        long_pairs,_ = self.custom_trade_signal_dict[date]
+        signal = 1 if pair in long_pairs else 0
+        return signal
+
+    def _get_signal_short(self,date:datetime,pair:str):
+        _, short_pairs = self.custom_trade_signal_dict[date]
+        signal = 1 if pair in short_pairs else 0
+        return signal
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
@@ -500,6 +578,43 @@ class NewArbitrage(IStrategy):
         :param metadata: Additional information, like the currently traded pair
         :return: DataFrame with exit columns populated
         """
+        return dataframe
+
+    def load_historic_analyzed_dataframe(self):
+        """Get historic analyzed dataframe for all pair
+
+        Returns:
+            pd.Dataframe: results
+        """
+        logger.debug("get_historic_analyzed_dataframe:IN")
+        pairs = self.dp.current_whitelist()
+        dataframe:Optional[pd.DataFrame] = None
+        for pair in self.dp.current_whitelist():
+            informative:pd.DataFrame= load_pair_history(
+                pair=pair,
+                timeframe=self.config['timeframe'],
+                datadir=self.config['datadir'],
+                startup_candles=HISTORIC_CANDLE_COUNT,
+                data_format=self.config.get('dataformat_ohlcv', 'json'),
+                candle_type=self.config['candle_type_def']
+            )
+            informative = informative[["date","close"]]
+            informative = informative.rename(columns = {"close":f"{pair}_close"})
+            if dataframe is None:
+                dataframe = informative
+            else:
+                dataframe = dataframe.merge(informative,on="date")
+                del informative
+
+        if dataframe is None:
+            logger.info("calculated_shared_analyzed_dataframe: return EMPTY")
+            return pd.DataFrame()
+
+        dataframe = self._calculate_macd(dataframe,pairs)
+        dataframe = self._calculate_macd_diff_with_base_pair(dataframe,pairs)
+        dataframe = self._calculate_macd_diff_mean(dataframe,pairs)
+
+        logger.debug("get_historic_analyzed_dataframe:OUT")
         return dataframe
 
     def version(self):
@@ -514,7 +629,7 @@ class NewArbitrage(IStrategy):
         """ Thing to do at bot loop start
         """
         logger.debug("bot_loop_start: IN")
-        self.process_at_loop_start(None)
+        self.process_at_loop_start(None)    #type:ignore
         logger.debug("bot_loop_start: OUT")
 
     def bot_start(self):
@@ -522,23 +637,6 @@ class NewArbitrage(IStrategy):
         """
         logger.debug("bot_start: IN")
         logger.debug("bot_start: OUT")
-
-    def get_shared_analyzed_row(self, date:datetime):
-        """ Get shared analyzed data for a specific date
-
-        Args:
-            date (datetime): the date to get info
-
-        Returns:
-            pd.Series: the analyzed data of the date
-        """
-        dataframe, _ = self.get_shared_analyzed_dataframe(self.timeframe,False)
-        latest_candle = dataframe[dataframe["date"] == date]
-
-        if len(latest_candle) > 0:
-            return latest_candle.iloc[0]
-        else:
-            return None
 
     def custom_stake_amount(self, pair: str, current_time: datetime, current_rate: float,
                             proposed_stake: float, min_stake: Optional[float], max_stake: float,
@@ -551,23 +649,24 @@ class NewArbitrage(IStrategy):
         Returns:
             float: stake amount, invest amount
         """
-        # logger.info("custom_stake_amount: IN")
+        logger.debug("custom_stake_amount: IN")
         open_pairs = [trade.pair for trade in Trade.get_open_trades()]
-        latest_time = current_time - timedelta(minutes=TRADING_TIMEFRAME_IN_MIN)
-        latest_candle = self.get_shared_analyzed_row(latest_time)
 
-        if latest_candle is None:
-            raise ValueError("Could not find the candle, weird")
+        latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[TIMEFRAME])
 
-        long_pairs, short_pairs = self.arbitrate_both_sides(
-            row = latest_candle,
-            pairs=self.dp.current_whitelist()
-        )
-
-        if self._cached_stake_time == latest_candle["date"]:
-            long_stake = self._cached_long_stake
-            short_stake = self._cached_short_stake
+        if latest_time in self.custom_stake_amount_dict.keys():
+            long_stake, short_stake = self.custom_stake_amount_dict[latest_time]
         else:
+
+            if latest_time not in self.custom_trade_signal_dict.keys():
+                return 0
+
+            long_pairs, short_pairs = self.custom_trade_signal_dict[latest_time]
+            logger.debug(f"Discovered LONG:")
+            logger.debug([pair for pair in long_pairs])
+            logger.debug(f"Discovered SHORT:")
+            logger.debug([pair for pair in short_pairs])
+
             invest_budget = min(
                 self.wallets.get_total_stake_amount()/INVEST_ROUNDS, #type: ignore
                 self.wallets.get_available_stake_amount() #type: ignore
@@ -581,26 +680,31 @@ class NewArbitrage(IStrategy):
             long_stake = long_budget/len(long_pairs) if len(long_pairs) > 0 else 0
             short_stake = short_budget/len(short_pairs) if len(short_pairs) > 0 else 0
 
-            self._cached_long_stake = long_stake
-            self._cached_short_stake = short_stake
+            self.custom_stake_amount_dict[latest_time] = (long_stake,short_stake)
 
-        #Update adjust position dictionary
-        latest = latest_candle["date"]
-        for pair in long_pairs:
-            if pair in open_pairs:
-                if pair not in self._cached_adjust_position.keys():
-                    self._cached_adjust_position[pair] = dict()
-                if latest not in self._cached_adjust_position[pair].keys():
-                    self._cached_adjust_position[pair][latest] = ("long",long_stake)
+            #Update adjust position dictionary
+            for pair in long_pairs:
+                if pair in open_pairs:
+                    if pair not in self.custom_adjust_position_amount_dict.keys():
+                        self.custom_adjust_position_amount_dict[pair] = dict()
+                    if latest_time not in self.custom_adjust_position_amount_dict[pair].keys():
+                        self.custom_adjust_position_amount_dict[pair][latest_time] = ("long",long_stake)
 
-        for pair in short_pairs:
-            if pair in open_pairs:
-                if pair not in self._cached_adjust_position.keys():
-                    self._cached_adjust_position[pair] = dict()
-                if latest not in self._cached_adjust_position[pair].keys():
-                        self._cached_adjust_position[pair][latest] = ("short",short_stake)
+            for pair in short_pairs:
+                if pair in open_pairs:
+                    if pair not in self.custom_adjust_position_amount_dict.keys():
+                        self.custom_adjust_position_amount_dict[pair] = dict()
+                    if latest_time not in self.custom_adjust_position_amount_dict[pair].keys():
+                            self.custom_adjust_position_amount_dict[pair][latest_time] = ("short",short_stake)
 
-        return long_stake if side == "long" else short_stake    #type: ignore
+        if side == "long":
+            logger.debug(f"Long {pair} by {long_stake}")
+            logger.debug("custom_stake_amount: OUT")
+            return long_stake   #type: ignore
+        else:
+            logger.debug(f"Short {pair} by {short_stake}")
+            logger.debug("custom_stake_amount: OUT")
+            return short_stake  #type: ignore
 
     def get_open_trades_info(self):
         """
@@ -637,7 +741,6 @@ class NewArbitrage(IStrategy):
         :param side: 'long' or 'short' - indicating the direction of the proposed trade
         :return: A leverage amount, which is between 1.0 and max_leverage.
         """
-
         return LEVERAGE_RATIO
 
     def backtest_loop_start_callback(self,current_time:datetime):
@@ -655,15 +758,35 @@ class NewArbitrage(IStrategy):
             current_time (datetime): current time
         """
         logger.debug("process_at_loop_start:IN")
+        #Print key info
         long_sum, short_sum,_,_ = self.get_open_trades_info()
         current_stake = long_sum + short_sum
         long_stake_ratio = round(long_sum/(long_sum+short_sum) if (long_sum+short_sum)>0 else 0,2)
-        total_stake = self.wallets.get_total_stake_amount()
+        total_stake = self.wallets.get_total_stake_amount()     #type: ignore
         stake_usage = round(current_stake/total_stake if total_stake > 0 else 0,3)
-        total_stake_value = self.wallets.get_total_stake_amount()
-        logger.info(f"{current_time} | Long stake pct: {long_stake_ratio}| \
-            Used stake pct: {stake_usage}| Total stake value: {total_stake_value}")
+        process = psutil.Process(os.getpid())
+        mem_usage = int(process.memory_info().rss/1_000_000)
+        logger.info(f"{current_time}| Long pct: {long_stake_ratio}| Used pct: "\
+            f"{stake_usage}| Open trades: | Total stake: {total_stake}USDT| Mem: {mem_usage}M")
 
+        #Print current position:
+        logger.info("Current open positions:")
+        long_open_trades = []
+        short_open_trades = []
+        for trade in Trade.get_open_trades():
+            if trade.trade_direction == "long":
+                long_open_trades.append((trade.pair,f"{trade.stake_amount}{trade.stake_currency}"))
+            else:
+                short_open_trades.append((trade.pair,f"{trade.stake_amount}{trade.stake_currency}"))
+
+        logger.info("OPEN LONG: {}".format(long_open_trades))
+        logger.info("OPEN SHORT: {}".format(short_open_trades))
+
+        #Print entry signal
+        latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[TIMEFRAME])
+        long_pairs, short_pairs = self.custom_trade_signal_dict[latest_time]
+        logger.info("TO LONG:{}".format(long_pairs))
+        logger.info("TO SHORT:{}".format(short_pairs))
         logger.debug("process_at_loop_start:OUT")
 
     def adjust_trade_position(self, trade: Trade, current_time: datetime,
@@ -697,36 +820,44 @@ class NewArbitrage(IStrategy):
                        Positive values to increase position, Negative values to decrease position.
                        Return None for no action.
         """
+        logger.debug("adjust_trade_position:IN")
         pair: str = trade.pair
-        latest_time = current_time - timedelta(minutes=TRADING_TIMEFRAME_IN_MIN)
-        adjust_position_dict: Optional[Tuple] = self._cached_adjust_position[pair] \
-            if pair in self._cached_adjust_position.keys() else None
+        latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[TIMEFRAME])
+        adjust_position_dict: Optional[Tuple] = self.custom_adjust_position_amount_dict[pair] \
+            if pair in self.custom_adjust_position_amount_dict.keys() else None
 
         if (adjust_position_dict is None):
+            logger.debug(f"{current_time} {pair} null dict")
+            logger.debug("adjust_trade_position:OUT")
             return None
 
         if latest_time not in adjust_position_dict.keys(): #type:ignore
+            logger.debug(f"{current_time} time key not found in dict")
+            logger.debug("adjust_trade_position:OUT")
             return None
 
         if adjust_position_dict[latest_time] == -1:  #type:ignore
+            logger.debug(f"{trade.pair} adjusted")
+            logger.debug("adjust_trade_position:OUT")
             return None
 
         (side,amount) = adjust_position_dict[latest_time]  #type:ignore
         adjust_position_dict[latest_time] = -1 #type:ignore
 
         if (trade.trade_direction == side):
-            # logger.info(f"Increase {pair} by {amount}")
+            logger.info(f"Increase {side} position of {pair} by {amount}")
             result_amount = amount
         else:
-            # logger.info(f"Decrease {pair} by {amount}")
+            logger.info(f"Decrease {side} position of {pair} by {amount}")
             if amount < trade.stake_amount:
                 result_amount = -amount
             else:
                 result_amount = trade.stake_amount
 
+        logger.debug("adjust_trade_position:OUT")
         return result_amount
 
-    def get_shared_analyzed_dataframe(self, timeframe:str, is_trimmed:bool=True) -> Tuple[DataFrame, datetime]:
+    def get_shared_analyzed_dataframe(self, timeframe:str) -> Tuple[DataFrame, datetime]:
         """ Get the analyzed dataframe that store analysis info of all pairs.
             Changed the way freqtrade work to optimize the memory.
 
@@ -739,19 +870,14 @@ class NewArbitrage(IStrategy):
         """
         logger.debug("get_shared_analyzed_dataframe:IN")
         key = (timeframe, self.config.get('candle_type_def', CandleType.SPOT))
-        if key in self._cached_shared_data:
-            df, date = self._cached_shared_data[key]
-            if is_trimmed:
-                if self.dp._slice_index:
-                    max_index = self.dp._slice_index
-                    df = df.iloc[max(0, max_index - MAX_DATAFRAME_CANDLES):max_index]
-
+        if key in self.custom_shared_analyzed_data_dict:
+            df, date = self.custom_shared_analyzed_data_dict[key]
             logger.debug("get_shared_analyzed_dataframe:OUT")
             return df, date
         else:
             logger.debug("return empty df")
             logger.debug("get_shared_analyzed_dataframe:OUT")
-            return (None, datetime.fromtimestamp(0, tz=timezone.utc))
+            return (None, datetime.fromtimestamp(0, tz=timezone.utc))   #type:ignore
 
     def _set_cached_shared_data_df(
         self,
@@ -768,6 +894,66 @@ class NewArbitrage(IStrategy):
         """
         logger.debug("_set_cached_shared_data:IN")
         key = (timeframe, candle_type)
-        self._cached_shared_data[key] = (
+        self.custom_shared_analyzed_data_dict[key] = (
             dataframe, datetime.now(timezone.utc))
+        self.custom_cached_shared_analyzed_data_time = dataframe.iloc[-1]["date"]
         logger.debug("_set_cached_shared_data:OUT")
+
+    def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
+                            time_in_force: str, current_time: datetime, entry_tag: Optional[str],
+                            side: str, **kwargs) -> bool:
+        """
+        Called right before placing a entry order.
+        Timing for this function is critical, so avoid doing heavy computations or
+        network requests in this method.
+
+        For full documentation please go to https://www.freqtrade.io/en/latest/strategy-advanced/
+
+        When not implemented by a strategy, returns True (always confirming).
+
+        :param pair: Pair that's about to be bought/shorted.
+        :param order_type: Order type (as configured in order_types). usually limit or market.
+        :param amount: Amount in target (base) currency that's going to be traded.
+        :param rate: Rate that's going to be used when using limit orders
+                     or current rate for market orders.
+        :param time_in_force: Time in force. Defaults to GTC (Good-til-cancelled).
+        :param current_time: datetime object, containing the current datetime
+        :param entry_tag: Optional entry_tag (buy_tag) if provided with the buy signal.
+        :param side: 'long' or 'short' - indicating the direction of the proposed trade
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        :return bool: When True is returned, then the buy-order is placed on the exchange.
+            False aborts the process
+        """
+        logger.info(f"Placed {side} entry of {amount}{pair}")
+        return True
+
+    def confirm_trade_exit(self, pair: str, trade: Trade, order_type: str, amount: float,
+                           rate: float, time_in_force: str, exit_reason: str,
+                           current_time: datetime, **kwargs) -> bool:
+        """
+        Called right before placing a regular exit order.
+        Timing for this function is critical, so avoid doing heavy computations or
+        network requests in this method.
+
+        For full documentation please go to https://www.freqtrade.io/en/latest/strategy-advanced/
+
+        When not implemented by a strategy, returns True (always confirming).
+
+        :param pair: Pair for trade that's about to be exited.
+        :param trade: trade object.
+        :param order_type: Order type (as configured in order_types). usually limit or market.
+        :param amount: Amount in base currency.
+        :param rate: Rate that's going to be used when using limit orders
+                     or current rate for market orders.
+        :param time_in_force: Time in force. Defaults to GTC (Good-til-cancelled).
+        :param exit_reason: Exit reason.
+            Can be any of ['roi', 'stop_loss', 'stoploss_on_exchange', 'trailing_stop_loss',
+                           'exit_signal', 'force_exit', 'emergency_exit']
+        :param current_time: datetime object, containing the current datetime
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        :return bool: When True, then the exit-order is placed on the exchange.
+            False aborts the process
+        """
+        logger.info(f"Placed exit of {amount}{pair}")
+
+        return True
