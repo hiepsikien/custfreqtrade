@@ -35,13 +35,8 @@ VERSION = "1.1.0"
 MACD_FAST = 26
 MACD_SLOW= 12
 MACD_SIGNAL= 9
-LONG_MULTIPLES = 8
-MEDIUM_MULTIPLES = 3
-SHORT_MULTIPLES = 1
-MARKET_CYCLES = ["MEDIUM","SLOW"]
 BASE_PAIR_NAME = "BTC/USDT:USDT"
-MARKET_CYCLE = "SLOW"
-ALTCOIN_CYCLE = "MEDIUM"
+STARTUP_CANDLE_COUNT = 30 * 4
 TIMEFRAME_IN_MIN = {
     "1m":1,
     "5m":5,
@@ -52,18 +47,8 @@ TIMEFRAME_IN_MIN = {
     "12h": 12 * 60,
     "1d": 24 * 60
 }
-#Trading related parameters
-TIMEFRAME = "4h"
-PAIR_NUMBER = 5
-HOLDING_PERIOD_IN_TIMEFRAMES = 3 * 6
-INVEST_ROUNDS = HOLDING_PERIOD_IN_TIMEFRAMES / 2
-LEVERAGE_RATIO = 2.0
-TAKE_PROFIT_RATE = 0.5
-STOP_LOSS_RATE = -0.25
-STARTUP_CANDLE_COUNT = 30 * 4
-HISTORIC_CANDLE_COUNT = 365 * 4
 
-class NewArbitrage(IStrategy):
+class BaseArbitrage(IStrategy):
     """
     This is a sample strategy to inspire you.
     More information in https://www.freqtrade.io/en/latest/strategy-customization/
@@ -80,6 +65,23 @@ class NewArbitrage(IStrategy):
     You should keep:
     - timeframe, minimal_roi, stoploss, trailing_*
     """
+    # Custom class variable not changing much
+    custom_long_multiples = 8
+    custom_medium_multiples = 3
+    custom_short_multiple = 1
+    custom_market_cycle = "SLOW"
+    custom_altcoin_cycle = "MEDIUM"
+    custom_market_cycle_list = ["MEDIUM","SLOW"]
+
+    # Custom class variable may vary
+    custom_pair_number = 5
+    custom_leverage_ratio = 2.0
+    custom_take_profit_rate = 0.5
+    custom_stop_loss_rate = -0.25
+    custom_historic_candle_count = 365 * 6
+    custom_holding_period = 3 * 6
+    custom_invest_rounds = 9
+
     # Strategy interface version - allow new iterations of the strategy interface.
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
@@ -89,17 +91,17 @@ class NewArbitrage(IStrategy):
 
     # Can this strategy go short?
     can_short: bool = True
+    timeframe = "4h"
 
     # Minimal ROI designed for the strategy.
     # This attribute will be overridden if the config file contains "minimal_roi".
     minimal_roi = {
-        "0": TAKE_PROFIT_RATE * LEVERAGE_RATIO,
-        f"{HOLDING_PERIOD_IN_TIMEFRAMES * TIMEFRAME_IN_MIN[TIMEFRAME]}":-1
+        "0": custom_take_profit_rate * custom_leverage_ratio,
+        f"{custom_holding_period * TIMEFRAME_IN_MIN[timeframe]}":-1
     }
-
     # Optimal stoploss designed for the strategy.
     # This attribute will be overridden if the config file contains "stoploss".
-    stoploss = STOP_LOSS_RATE * LEVERAGE_RATIO
+    stoploss = custom_stop_loss_rate * custom_leverage_ratio
 
     # Trailing stoploss
     trailing_stop = False
@@ -107,8 +109,6 @@ class NewArbitrage(IStrategy):
     # trailing_stop_positive = 0.01
     # trailing_stop_positive_offset = 0.0  # Disabled / not configured
 
-    # Optimal timeframe for the strategy.
-    timeframe = TIMEFRAME
 
     # Run "populate_indicators()" only for new candle.
     process_only_new_candles = True
@@ -202,17 +202,17 @@ class NewArbitrage(IStrategy):
             col_name = f"{pair}_close"
             _,_,medium = ta.MACD(               #type: ignore
                 df[col_name],
-                fastperiod = MEDIUM_MULTIPLES * MACD_FAST,
-                slowperiod = MEDIUM_MULTIPLES * MACD_SLOW,
-                signalperiod = MEDIUM_MULTIPLES * MACD_SIGNAL
+                fastperiod = self.custom_medium_multiples * MACD_FAST,
+                slowperiod = self.custom_medium_multiples * MACD_SLOW,
+                signalperiod = self.custom_medium_multiples * MACD_SIGNAL
             )
             medium = np.array(medium) / df[col_name]
 
             _,_,slow = ta.MACD(                 #type: ignore
                 df[col_name],
-                fastperiod = LONG_MULTIPLES * MACD_FAST,
-                slowperiod = LONG_MULTIPLES * MACD_SLOW,
-                signalperiod = LONG_MULTIPLES * MACD_SIGNAL
+                fastperiod = self.custom_long_multiples * MACD_FAST,
+                slowperiod = self.custom_long_multiples * MACD_SLOW,
+                signalperiod = self.custom_long_multiples * MACD_SIGNAL
             )
             slow = slow / df[col_name]
 
@@ -241,7 +241,7 @@ class NewArbitrage(IStrategy):
         logger.debug("...calculating MACD diff between altcoins and BTC...")
         #Calculating diff
         for pair in pairs:
-            for cycle in MARKET_CYCLES:
+            for cycle in self.custom_market_cycle_list:
 
                 diff = df[f"{pair}_{cycle}_MACD"] - df[f"{BASE_PAIR_NAME}_{cycle}_MACD"]
                 diff.name = f"{pair}_DIFF_{cycle}"
@@ -327,7 +327,7 @@ class NewArbitrage(IStrategy):
         long_pairs: List[str] = []
         short_pairs: List[str] = []
 
-        col = f"{BASE_PAIR_NAME}_{MARKET_CYCLE}_MACD"
+        col = f"{BASE_PAIR_NAME}_{self.custom_market_cycle}_MACD"
 
         if row[col]>0:
             is_bull = True
@@ -344,13 +344,11 @@ class NewArbitrage(IStrategy):
 
         for pair in pairs:
             if (is_bull):
-                # diff_fast = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE_FAST}_BULL"])
-                diff = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BULL"])
-                diff_mean = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BULL_MEAN"])
+                diff = float(row[f"{pair}_DIFF_{self.custom_altcoin_cycle}_BULL"])
+                diff_mean = float(row[f"{pair}_DIFF_{self.custom_altcoin_cycle}_BULL_MEAN"])
             else:
-                # diff_fast = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE_FAST}_BEAR"])
-                diff = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BEAR"])
-                diff_mean = float(row[f"{pair}_DIFF_{ALTCOIN_CYCLE}_BEAR_MEAN"])
+                diff = float(row[f"{pair}_DIFF_{self.custom_altcoin_cycle}_BEAR"])
+                diff_mean = float(row[f"{pair}_DIFF_{self.custom_altcoin_cycle}_BEAR_MEAN"])
 
             if (diff_mean > 0) & (diff > 0):
                 long_dict[pair] = diff_mean
@@ -360,10 +358,12 @@ class NewArbitrage(IStrategy):
                 inv_short_dict[diff_mean] = pair
 
         sorted_inv_long_dict = sorted(inv_long_dict,reverse=True)
-        long_pairs = [inv_long_dict[sorted_inv_long_dict[i]] for i in range(min(len(long_dict),PAIR_NUMBER))]
+        long_pairs = [inv_long_dict[sorted_inv_long_dict[i]] \
+            for i in range(min(len(long_dict),self.custom_pair_number))]
 
         sorted_inv_short_dict = sorted(inv_short_dict,reverse=False)
-        short_pairs = [inv_short_dict[sorted_inv_short_dict[i]] for i in range(min(len(short_dict),PAIR_NUMBER))]
+        short_pairs = [inv_short_dict[sorted_inv_short_dict[i]] \
+            for i in range(min(len(short_dict),self.custom_pair_number))]
 
         if long_pairs and not short_pairs:
             short_pairs += [BASE_PAIR_NAME]
@@ -477,7 +477,7 @@ class NewArbitrage(IStrategy):
                 pair=pair,
                 timeframe=self.config['timeframe'],
                 datadir=self.config['datadir'],
-                startup_candles=HISTORIC_CANDLE_COUNT,
+                startup_candles=self.custom_historic_candle_count,
                 data_format=self.config.get('dataformat_ohlcv', 'json'),
                 candle_type=self.config['candle_type_def']
             )
@@ -535,7 +535,7 @@ class NewArbitrage(IStrategy):
         open_pairs = [trade.pair for trade in Trade.get_open_trades()]
 
         if self.dp.runmode == RunMode.BACKTEST:
-            latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[TIMEFRAME])
+            latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[self.timeframe])
         else:
             latest_time = self.get_shared_analyzed_dataframe(self.timeframe)[0].iloc[-1]["date"]
 
@@ -552,7 +552,7 @@ class NewArbitrage(IStrategy):
             logger.debug([pair for pair in short_pairs])
 
             invest_budget = min(
-                self.wallets.get_total_stake_amount()/INVEST_ROUNDS, #type: ignore
+                self.wallets.get_total_stake_amount()/self.custom_invest_rounds, #type: ignore
                 self.wallets.get_available_stake_amount() #type: ignore
             )
             long_sum, short_sum, _, _ \
@@ -625,7 +625,7 @@ class NewArbitrage(IStrategy):
         :param side: 'long' or 'short' - indicating the direction of the proposed trade
         :return: A leverage amount, which is between 1.0 and max_leverage.
         """
-        return LEVERAGE_RATIO
+        return self.custom_leverage_ratio
 
     def backtest_loop_start_callback(self,current_time:datetime):
         """ The callback function that backtester call at the beginning of each timeframe
@@ -668,7 +668,7 @@ class NewArbitrage(IStrategy):
 
         #Print entry signal
         if current_time:
-            latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[TIMEFRAME])
+            latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[self.timeframe])
             long_pairs, short_pairs = self.custom_trade_signal_dict[latest_time]
             logger.debug("TO LONG:{}".format(long_pairs))
             logger.debug("TO SHORT:{}".format(short_pairs))
@@ -707,7 +707,7 @@ class NewArbitrage(IStrategy):
         """
         logger.debug("adjust_trade_position:IN")
         pair: str = trade.pair
-        latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[TIMEFRAME])
+        latest_time = current_time - timedelta(minutes=TIMEFRAME_IN_MIN[self.timeframe])
         adjust_position_dict: Optional[Tuple] = self.custom_adjust_position_amount_dict[pair] \
             if pair in self.custom_adjust_position_amount_dict.keys() else None
 
@@ -782,7 +782,7 @@ class NewArbitrage(IStrategy):
         self.custom_shared_analyzed_data_dict[key] = (
             dataframe, datetime.now(timezone.utc))
         self.custom_cached_shared_analyzed_data_time = dataframe.iloc[-1]["date"]
-        dataframe.to_csv("cached_df.csv")
+        # dataframe.to_csv("cached_df.csv")
         logger.debug("_set_cached_shared_data:OUT")
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
