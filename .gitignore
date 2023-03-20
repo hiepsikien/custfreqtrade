@@ -5,6 +5,7 @@ config*.json
 *.sqlite-wal
 logfile.txt
 user_data/data
+user_data/logs
 backtest_results/
 freqtrade-plot.html
 freqtrade-profit-plot.html
