@@ -39,7 +39,6 @@ from freqtrade.wallets import Wallets
 
 logger = logging.getLogger(__name__)
 
-
 class FreqtradeBot(LoggingMixin):
     """
     Freqtrade is the main class of the bot.
